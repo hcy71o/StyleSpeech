@@ -34,7 +34,9 @@ def make_folders(out_dir):
     energy_out_dir = os.path.join(out_dir, "energy")
     if not os.path.exists(energy_out_dir):
         os.makedirs(energy_out_dir, exist_ok=True)
-
+    latent_out_dir = os.path.join(out_dir, "latent")
+    if not os.path.exists(latent_out_dir):
+        os.makedirs(latent_out_dir, exist_ok=True)
 
 def main(data_dir, out_dir, libritts):
 

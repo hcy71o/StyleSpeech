@@ -12,11 +12,15 @@ import pyworld as pw
 from preprocessors.utils import remove_outlier, get_alignment, average_by_duration
 from scipy.interpolate import interp1d
 import json
+from models.Wav2vec2 import Wav2vec2
+import torch
 
 
 def write_single(output_folder, wav_fname, text, resample_rate, top_db=None):
     data, sample_rate = librosa.load(wav_fname, sr=None)
     # trim audio
+    wav_fname = wav_fname.split('/')[-1]
+    
     if top_db is not None:
         trimmed, _ = librosa.effects.trim(data, top_db=top_db)
     else:
@@ -24,7 +28,18 @@ def write_single(output_folder, wav_fname, text, resample_rate, top_db=None):
     # resample audio
     resampled = librosa.resample(trimmed, sample_rate, resample_rate)
     y = (resampled * 32767.0).astype(np.int16)
-    wav_fname = wav_fname.split('/')[-1]
+    
+    #* for wav2vec2.0
+    resampled_16k = librosa.resample(trimmed, sample_rate, 16000)
+    y_16k = (resampled_16k * 32767.0).astype(np.int16)
+    dir_sr = output_folder.split('/')[-2]
+    output_folder_16k = os.path.join(output_folder.split(dir_sr)[0] + 'wav16' + output_folder.split(dir_sr)[1])
+    if not os.path.exists(output_folder_16k):
+        os.makedirs(output_folder_16k, exist_ok=True)
+    target_wav16_fname = os.path.join(output_folder_16k, wav_fname)
+    write(target_wav16_fname, 16000, y_16k)
+
+    
     target_wav_fname = os.path.join(output_folder, wav_fname)
     target_txt_fname = os.path.join(output_folder, wav_fname.replace('.wav', '.txt'))
     if not os.path.exists(output_folder):
@@ -37,19 +52,19 @@ def write_single(output_folder, wav_fname, text, resample_rate, top_db=None):
     return y.shape[0] / float(resample_rate)
 
 
-def prepare_align_and_resample(data_dir, sr):
+def prepare_align_and_resample(data_dir, out_dir, sr):
     wav_foder_names = ['train-clean-100', 'train-clean-360']
     wavs = []
     for wav_folder in wav_foder_names:
         wav_folder = os.path.join(data_dir, wav_folder)
         wav_fname_list = [str(f) for f in list(Path(wav_folder).rglob('*.wav'))]
-
         output_wavs_folder_name = 'wav{}'.format(sr//1000)
-        output_wavs_folder = os.path.join(data_dir, output_wavs_folder_name)
+        output_wavs_folder = os.path.join(out_dir, output_wavs_folder_name)
         if not os.path.exists(output_wavs_folder):
             os.mkdir(output_wavs_folder)
 
         for wav_fname in wav_fname_list:
+
             _sid = wav_fname.split('/')[-3]
             output_folder = os.path.join(output_wavs_folder, _sid)
             txt_fname = wav_fname.replace('.wav','.normalized.txt')
@@ -87,6 +102,8 @@ class Preprocessor:
             config["mel_fmin"],
             config["mel_fmax"],
         )
+        
+        self.wav2vec2 = Wav2vec2().cuda().eval()
 
     def write_metadata(self, data_dir, out_dir):
         metadata = os.path.join(out_dir, 'metadata.csv')
@@ -117,8 +134,9 @@ class Preprocessor:
                 parts = line.strip().split('|')
                 basename = parts[0]
                 basenames.append(basename)
-
-        results = Parallel(n_jobs=5, verbose=1)(
+        
+        #* Total utt (len(basenames)): 149736
+        results = Parallel(n_jobs=2, verbose=1)(
                 delayed(self.process_utterance)(data_dir, out_dir, basename) for basename in basenames
             )
         results = [ r for r in results if r is not None ]
@@ -160,9 +178,20 @@ class Preprocessor:
         sid = basename.split('_')[0]
         wav_path = os.path.join(in_dir, 'wav{}'.format(self.sampling_rate//1000), sid, '{}.wav'.format(basename))
         tg_path = os.path.join(out_dir, 'TextGrid', sid, '{}.TextGrid'.format(basename)) 
-        # print(wav_path, tg_path)
-        # raise ValueError('stop')
 
+        ''' This should be removed.. mistake
+        #*Wav2vec2.0
+        wav16_path = os.path.join(in_dir, 'wav16', sid, '{}.wav'.format(basename))
+        wav16, sr16 = librosa.load(wav16_path, sr=None) #* preserve native sampling rate of the file
+        wav16 = torch.FloatTensor(wav16).unsqueeze(0).cuda()
+        
+        with torch.no_grad():
+            #* (1, seq_len, 756)
+            latent_output = self.wav2vec2(wav16)
+            #* (seq_len, 756)
+            latent_output = latent_output.squeeze(0).detach().cpu().numpy()
+        '''
+        
         if not os.path.exists(wav_path) or not os.path.exists(tg_path):
             return None
         
@@ -177,14 +206,23 @@ class Preprocessor:
             return None
 
         # Read and trim wav files
-        wav, _ = librosa.load(wav_path, sr=None)
+        wav, sr = librosa.load(wav_path, sr=None) #* preserve native sampling rate of the file
         wav = wav[int(self.sampling_rate*start):int(self.sampling_rate*end)].astype(np.float32)
+        
+        #TODO Save latent vector with the trimmed waveforms
+        wav_16 = librosa.resample(wav, sr, 16000)
+        wav_16 = torch.FloatTensor(wav_16).unsqueeze(0).cuda()
+
+        with torch.no_grad():
+            #* (1, seq_len, 756)
+            latent_output = self.wav2vec2(wav_16)
+            #* (seq_len, 756)
+            latent_output = latent_output.squeeze(0).detach().cpu().numpy().astype(np.float32)
         
         # Compute fundamental frequency
         _f0, t = pw.dio(wav.astype(np.float64), self.sampling_rate, frame_period=self.hop_length/self.sampling_rate*1000)
         f0 = pw.stonemask(wav.astype(np.float64), _f0, t, self.sampling_rate)
         f0 = f0[:sum(duration)]
-
         # Compute mel-scale spectrogram and energy
         mel_spectrogram, energy = Audio.tools.get_mel_from_wav(wav, self.STFT)
         mel_spectrogram = mel_spectrogram[:, :sum(duration)]
@@ -193,7 +231,6 @@ class Preprocessor:
         if mel_spectrogram.shape[1] >= self.max_seq_len:
             return None
         
-
         # Pitch perform linear interpolation
         nonzero_ids = np.where(f0 != 0)[0]
         if len(nonzero_ids)>=2:
@@ -206,27 +243,28 @@ class Preprocessor:
             f0 = interp_fn(np.arange(0, len(f0)))
         # Pitch phoneme-level average
         f0 = average_by_duration(np.array(f0), np.array(duration))
-
         # Energy phoneme-level average
         energy = average_by_duration(np.array(energy), np.array(duration))
-
         if len([f for f in f0 if f != 0]) ==0 or len([e for e in energy if e != 0])==0:
             return None
         
         # Save alignment
         ali_filename = '{}-ali-{}.npy'.format(dataset, basename)
         np.save(os.path.join(out_dir, 'alignment', ali_filename), duration, allow_pickle=False)
-
         # Save fundamental frequency
         f0_filename = '{}-f0-{}.npy'.format(dataset, basename)
         np.save(os.path.join(out_dir, 'f0', f0_filename), f0, allow_pickle=False)
-
         # Save energy
         energy_filename = '{}-energy-{}.npy'.format(dataset, basename)
         np.save(os.path.join(out_dir, 'energy', energy_filename), energy, allow_pickle=False)
-
         # Save spectrogram
         mel_filename = '{}-mel-{}.npy'.format(dataset, basename)
         np.save(os.path.join(out_dir, 'mel', mel_filename), mel_spectrogram.T, allow_pickle=False)
+        
+        #* Save latent extracted from Wav2vec2.0
+        latent_filename = '{}-latent-{}.npy'.format(dataset, basename)
+        np.save(os.path.join(out_dir, 'latent', latent_filename), latent_output, allow_pickle=False)
+
+        return None
 
         return '|'.join([basename, text, sid]), list(f0), list(energy), mel_spectrogram.shape[1]
