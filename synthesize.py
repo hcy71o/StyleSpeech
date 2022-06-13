@@ -9,6 +9,7 @@ from string import punctuation
 from g2p_en import G2p
 
 from models.StyleSpeech import StyleSpeech
+from models.Wav2vec2 import Wav2vec2
 from text import text_to_sequence
 import audio as Audio
 import utils
@@ -54,16 +55,18 @@ def preprocess_english(text, lexicon_path):
 
 def preprocess_audio(audio_file, _stft):
     wav, sample_rate = librosa.load(audio_file, sr=None)
+    wav_ = wav
     if sample_rate != 22050:
         wav = librosa.resample(wav, sample_rate, 22050)
     '''
-    It is shown that the trimming should be carefully designed,
-    because the output audio quality highly depends on the input ref audio.
-    Recommend to listen trimmed ref audio before inference.
+    In Zero-shot of VCTK dataset, it is effective to trim the silence (top_db=15)
     '''
     wav, section = librosa.effects.trim(wav, top_db=15)
+    wav16 = librosa.resample(wav, sample_rate, 16000)
+    wav16 = torch.FloatTensor(wav16).unsqueeze(0)
+    
     mel_spectrogram, _ = Audio.tools.get_mel_from_wav(wav, _stft)
-    return torch.from_numpy(mel_spectrogram).to(device=device)
+    return wav16.to(device), torch.from_numpy(mel_spectrogram).to(device=device)
 
 
 def get_StyleSpeech(config, checkpoint_path):
@@ -73,34 +76,49 @@ def get_StyleSpeech(config, checkpoint_path):
     return model
 
 
-def synthesize(args, text, model, _stft):   
+def synthesize(args, text, model, wav2vec2, _stft):   
     # preprocess audio and text
-
-    ref_mel = preprocess_audio(args.ref_audio, _stft).transpose(0,1).unsqueeze(0)
-    src = preprocess_english(text, args.lexicon_path).unsqueeze(0)
-    src_len = torch.from_numpy(np.array([src.shape[1]])).to(device=device)
-    
     save_path = args.save_path
     if not os.path.exists(save_path):
         os.makedirs(save_path, exist_ok=True)
 
-    # Extract style vector
-    style_vector = model.get_style_vector(ref_mel)
-
-    # Forward
-    mel_output = model.inference(style_vector, src, src_len)[0]
-    
+    wav16, ref_mel = preprocess_audio(args.ref_audio, _stft)
+    ref_mel = ref_mel.transpose(0,1).unsqueeze(0)
     mel_ref_ = ref_mel.cpu().squeeze().transpose(0, 1).detach()
-    mel_ = mel_output.cpu().squeeze().transpose(0, 1).detach()
-
-    np.save(save_path + '{}.npy'.format(text[:10]), np.array(mel_.unsqueeze(0)))
     np.save(save_path + 'ref_{}.npy'.format(args.ref_audio[-12:-4]), np.array(mel_ref_.unsqueeze(0)))
+
+    #* (1, T, 756)
+    latent = wav2vec2(wav16)
+    print('latent.shape', latent.shape)
+    # Extract style vector
+    # style_vector = model.get_style_vector(ref_mel)
+    #* (1, 1, 128)
+    style_vector = model.get_style_vector(latent)
+    print('style_vector.shape', style_vector.shape)
+    
+    if isinstance(text, list):
+        for txt in text:
+            src = preprocess_english(txt, args.lexicon_path).unsqueeze(0)
+            src_len = torch.from_numpy(np.array([src.shape[1]])).to(device=device)
+            # Forward
+            mel_output = model.inference(style_vector, src, src_len)[0]
+            mel_ = mel_output.cpu().squeeze().transpose(0, 1).detach()
+            np.save(save_path + '{}.npy'.format(txt[:10]), np.array(mel_.unsqueeze(0)))
+
+    else:
+        src = preprocess_english(text, args.lexicon_path).unsqueeze(0)
+        src_len = torch.from_numpy(np.array([src.shape[1]])).to(device=device)
+        # Forward
+        mel_output = model.inference(style_vector, src, src_len)[0]
+        mel_ = mel_output.cpu().squeeze().transpose(0, 1).detach()
+        np.save(save_path + '{}.npy'.format(text[:10]), np.array(mel_.unsqueeze(0)))
+
+    print('Generate done!')
 
     # plotting
     # utils.plot_data([mel_ref_.numpy(), mel_.numpy()], 
     #     ['Ref Spectrogram', 'Synthesized Spectrogram'], filename=os.path.join(save_path, 'plot.png'))
-    
-    print('Generate done!')
+
 
 
 if __name__ == "__main__":
@@ -111,7 +129,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", type=str, default='results/')
     parser.add_argument("--ref_audio", type=str, required=True,
         help="path to an reference speech audio sample")
-    parser.add_argument("--text", type=str, default='In being comparatively modern.',
+    parser.add_argument("--text", type=str, default = 'In being comparatively modern.',
         help="raw text to synthesize")
     parser.add_argument("--lexicon_path", type=str, default='lexicon/librispeech-lexicon.txt')
     args = parser.parse_args()
@@ -123,6 +141,8 @@ if __name__ == "__main__":
 
     # Get model
     model = get_StyleSpeech(config, args.checkpoint_path)
+    wav2vec2 = Wav2vec2().to(device)
+    wav2vec2.eval()
     print('model is prepared')
 
     _stft = Audio.stft.TacotronSTFT(
@@ -210,8 +230,5 @@ if __name__ == "__main__":
         'She went up to the ward and found him lying down, quote,',
 
     ]
-    if isinstance(args.text, list):
-        for text in args.text:
-            synthesize(args, text, model, _stft)
-    else:
-        synthesize(args, args.text, model, _stft)
+
+    synthesize(args, args.text, model, wav2vec2, _stft)

@@ -77,6 +77,10 @@ class TextMelDataset(Dataset):
         mel_path = os.path.join(
             self.data_path, "mel", "libritts-mel-{}.npy".format(basename))
         mel_target = np.load(mel_path)
+        #* wav2vec2.0
+        latent_path = os.path.join(
+            self.data_path, "latent", "libritts-latent-{}.npy".format(basename))
+        latent = np.load(latent_path)
         D_path = os.path.join(
             self.data_path, "alignment", "libritts-ali-{}.npy".format(basename))
         D = np.load(D_path)
@@ -95,6 +99,7 @@ class TextMelDataset(Dataset):
                 "sid": sid,
                 "text": phone,
                 "mel_target": mel_target,
+                "latent": latent,
                 "D": D,
                 "f0": f0,
                 "energy": energy}
@@ -104,6 +109,7 @@ class TextMelDataset(Dataset):
     def reprocess(self, batch, cut_list):
         ids = [batch[ind]["id"] for ind in cut_list]
         sids = [batch[ind]["sid"] for ind in cut_list]
+        latents = [batch[ind]["latent"] for ind in cut_list]
         texts = [batch[ind]["text"] for ind in cut_list]
         mel_targets = [batch[ind]["mel_target"] for ind in cut_list]
         Ds = [batch[ind]["D"] for ind in cut_list]
@@ -119,10 +125,14 @@ class TextMelDataset(Dataset):
         length_mel = np.array(list())
         for mel in mel_targets:
             length_mel = np.append(length_mel, mel.shape[0])
-        
+
+        length_latent = np.array(list())
+        for latent in latents:
+            length_latent = np.append(length_latent, latent.shape[0])
         texts = pad_1D(texts)
         Ds = pad_1D(Ds)
         mel_targets = pad_2D(mel_targets)
+        latents = pad_2D(latents)
         f0s = pad_1D(f0s)
         energies = pad_1D(energies)
         log_Ds = np.log(Ds + 1.)
@@ -131,12 +141,14 @@ class TextMelDataset(Dataset):
                "sid": np.array(sids),
                "text": texts,
                "mel_target": mel_targets,
+               "latent": latents,
                "D": Ds,
                "log_D": log_Ds,
                "f0": f0s,
                "energy": energies,
                "src_len": length_text,
-               "mel_len": length_mel}
+               "mel_len": length_mel,
+               "latent_len": length_latent}
         
         return out
 

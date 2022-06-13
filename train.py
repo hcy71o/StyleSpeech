@@ -78,13 +78,15 @@ def main(args, c):
                 break
                 
             # Get Data
-            sid, text, mel_target, D, log_D, f0, energy, \
-                    src_len, mel_len, max_src_len, max_mel_len = model.parse_batch(batch)
+            sid, text, mel_target, latent, D, log_D, f0, energy, \
+                    src_len, mel_len, latent_len, \
+                        max_src_len, max_mel_len, max_latent_len = model.parse_batch(batch)
                 
             # Forward
             scheduled_optim.zero_grad()
             mel_output, src_output, style_vector, log_duration_output, f0_output, energy_output, src_mask, mel_mask, _  = model(
-                    text, src_len, mel_target, mel_len, D, f0, energy, max_src_len, max_mel_len)
+                    text, src_len, mel_target, latent, mel_len, latent_len, \
+                        D, f0, energy, True, max_src_len, max_mel_len, max_latent_len)
 
             mel_loss, d_loss, f_loss, e_loss = Loss(mel_output, mel_target, 
                     log_duration_output, log_D, f0_output, f0, energy_output, energy, src_len, mel_len)
@@ -166,10 +168,10 @@ if __name__ == "__main__":
     parser.add_argument('--save_path', default='exp_stylespeech')
     parser.add_argument('--config', default='configs/config.json')
     parser.add_argument('--max_iter', default=2000000, type=int)
-    parser.add_argument('--save_step', default=50000, type=int)
+    parser.add_argument('--save_step', default=10000, type=int)
     parser.add_argument('--synth_step', default=5000, type=int)
     parser.add_argument('--eval_step', default=20000, type=int)
-    parser.add_argument('--log_step', default=5000, type=int)
+    parser.add_argument('--log_step', default=500, type=int)
     parser.add_argument('--checkpoint_path', default=None, type=str, help='Path to the pretrained model') 
 
     args = parser.parse_args()

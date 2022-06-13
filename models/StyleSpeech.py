@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
 from text.symbols import symbols
 import models.Constants as Constants
 from models.Modules import Mish, LinearNorm, ConvNorm, Conv1dGLU, \
@@ -18,28 +19,34 @@ class StyleSpeech(nn.Module):
         self.encoder = Encoder(config)
         self.variance_adaptor = VarianceAdaptor(config)
         self.decoder = Decoder(config)
-        
+        self.post_latent_encoder = PostLatentEncoder(config)
+
     def parse_batch(self, batch):
         sid = torch.from_numpy(batch["sid"]).long().cuda()
         text = torch.from_numpy(batch["text"]).long().cuda()
         mel_target = torch.from_numpy(batch["mel_target"]).float().cuda()
+        latent = torch.from_numpy(batch["latent"]).float().cuda()
         D = torch.from_numpy(batch["D"]).long().cuda()
         log_D = torch.from_numpy(batch["log_D"]).float().cuda()
         f0 = torch.from_numpy(batch["f0"]).float().cuda()
         energy = torch.from_numpy(batch["energy"]).float().cuda()
         src_len = torch.from_numpy(batch["src_len"]).long().cuda()
         mel_len = torch.from_numpy(batch["mel_len"]).long().cuda()
+        latent_len = torch.from_numpy(batch["latent_len"]).long().cuda()
         max_src_len = np.max(batch["src_len"]).astype(np.int32)
         max_mel_len = np.max(batch["mel_len"]).astype(np.int32)
-        return sid, text, mel_target, D, log_D, f0, energy, src_len, mel_len, max_src_len, max_mel_len
+        max_latent_len = np.max(batch["latent_len"]).astype(np.int32)
+        return sid, text, mel_target, latent, D, log_D, f0, energy, src_len, mel_len, latent_len, \
+            max_src_len, max_mel_len, max_latent_len
 
-    def forward(self, src_seq, src_len, mel_target, mel_len=None, 
-                    d_target=None, p_target=None, e_target=None, max_src_len=None, max_mel_len=None):
+    def forward(self, src_seq, src_len, mel_target, latent, mel_len=None, latent_len=None, 
+                    d_target=None, p_target=None, e_target=None, use_acoustic_enc=None, max_src_len=None, max_mel_len=None, max_latent_len=None):
+
         src_mask = get_mask_from_lengths(src_len, max_src_len)
         mel_mask = get_mask_from_lengths(mel_len, max_mel_len) if mel_len is not None else None
-        
+        latent_mask = get_mask_from_lengths(latent_len, max_latent_len) if latent_len is not None else None 
         # Extract Style Vector
-        style_vector = self.style_encoder(mel_target, mel_mask)
+        style_vector = self.post_latent_encoder(latent, latent_mask)
         # Encoding
         encoder_output, src_embedded, _ = self.encoder(src_seq, style_vector, src_mask)
         # Variance Adaptor
@@ -69,9 +76,9 @@ class StyleSpeech(nn.Module):
 
         return mel_output, src_embedded, d_prediction, p_prediction, e_prediction, src_mask, mel_mask, mel_len
 
-    def get_style_vector(self, mel_target, mel_len=None):
-        mel_mask = get_mask_from_lengths(mel_len) if mel_len is not None else None
-        style_vector = self.style_encoder(mel_target, mel_mask)
+    def get_style_vector(self, latent, latent_len = None):
+        latent_mask = get_mask_from_lengths(latent_len) if latent_len is not None else None
+        style_vector = self.post_latent_encoder(latent, latent_mask)
 
         return style_vector
 
@@ -337,3 +344,38 @@ class Prenet(nn.Module):
         if mask is not None:
             output = output.masked_fill(mask.unsqueeze(-1), 0)
         return output
+
+class PostLatentEncoder(nn.Module):
+    ''' PostLatentEncoder '''
+    def __init__(self, config):
+        super(PostLatentEncoder, self).__init__()
+
+        self.hidden_dim = 768 #* Follow Wav2vec2.0 - BASE
+        self.out_dim = config.style_vector_dim
+
+        # self.dropout = nn.Dropout(config.dropout)
+        #TODO # of linear layers: 1 or 2 (current: 2)
+        self.linear1 = nn.Conv1d(self.hidden_dim, 256, 1)
+        self.linear2 = nn.Conv1d(256, self.out_dim, 1)
+
+    def temporal_avg_pool(self, x, mask=None):
+        if mask is None:
+            out = torch.mean(x, dim=1)
+        else:
+            len_ = (~mask).sum(dim=1).unsqueeze(1)
+            x = x.masked_fill(mask.unsqueeze(-1), 0)
+            x = x.sum(dim=1)
+            out = torch.div(x, len_)
+        return out
+
+    def forward(self, x, mask=None):
+
+        #* (B, max_T, 768) -> (B, 768, 1)
+        x = self.temporal_avg_pool(x, mask=mask).unsqueeze(-1)
+        x = F.relu(self.linear1(x))
+        #* (B, 128, 1)
+        x = self.linear2(x)
+        #* (B, 128)
+        x = x.transpose(1,2).squeeze(1)
+
+        return x
