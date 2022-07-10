@@ -1,3 +1,4 @@
+from matplotlib.pyplot import grid
 import torch
 import torch.nn as nn
 import numpy as np
@@ -17,12 +18,14 @@ class StyleSpeech(nn.Module):
         self.style_encoder = MelStyleEncoder(config)
         self.encoder = Encoder(config)
         self.variance_adaptor = VarianceAdaptor(config)
-        self.decoder = Decoder(config)
+        self.decoder = GridDecoder(config)
+        self.maxgrid = np.max(config.grid_lengths).astype(np.int32)
         
     def parse_batch(self, batch):
         sid = torch.from_numpy(batch["sid"]).long().cuda()
         text = torch.from_numpy(batch["text"]).long().cuda()
         mel_target = torch.from_numpy(batch["mel_target"]).float().cuda()
+        mel_target_style = torch.from_numpy(batch["mel_target_style"]).float().cuda()
         D = torch.from_numpy(batch["D"]).long().cuda()
         log_D = torch.from_numpy(batch["log_D"]).float().cuda()
         f0 = torch.from_numpy(batch["f0"]).float().cuda()
@@ -31,25 +34,26 @@ class StyleSpeech(nn.Module):
         mel_len = torch.from_numpy(batch["mel_len"]).long().cuda()
         max_src_len = np.max(batch["src_len"]).astype(np.int32)
         max_mel_len = np.max(batch["mel_len"]).astype(np.int32)
-        return sid, text, mel_target, D, log_D, f0, energy, src_len, mel_len, max_src_len, max_mel_len
+        return sid, text, mel_target, mel_target_style, D, log_D, f0, energy, src_len, mel_len, max_src_len, max_mel_len
 
-    def forward(self, src_seq, src_len, mel_target, mel_len=None, 
+    def forward(self, src_seq, src_len, mel_target, mel_target_style, mel_len=None, 
                     d_target=None, p_target=None, e_target=None, max_src_len=None, max_mel_len=None):
         src_mask = get_mask_from_lengths(src_len, max_src_len)
-        mel_mask = get_mask_from_lengths(mel_len, max_mel_len) if mel_len is not None else None
+        style_mel_mask = get_mask_from_lengths(mel_len, max_mel_len) if mel_len is not None else None
+        grid_mel_mask = get_mask_from_lengths(mel_len, max_mel_len, maxgrid=self.maxgrid) if mel_len is not None else None
         
         # Extract Style Vector
-        style_vector = self.style_encoder(mel_target, mel_mask)
+        style_vector = self.style_encoder(mel_target_style, style_mel_mask)
         # Encoding
         encoder_output, src_embedded, _ = self.encoder(src_seq, style_vector, src_mask)
         # Variance Adaptor
-        acoustic_adaptor_output, d_prediction, p_prediction, e_prediction, mel_len, mel_mask = self.variance_adaptor(
-                encoder_output, src_mask, mel_len, mel_mask, 
+        acoustic_adaptor_output, d_prediction, p_prediction, e_prediction, mel_len, grid_mel_mask = self.variance_adaptor(
+                encoder_output, src_mask, self.maxgrid, mel_len, grid_mel_mask, 
                         d_target, p_target, e_target, max_mel_len)
         # Deocoding
-        mel_prediction, _ = self.decoder(acoustic_adaptor_output, style_vector, mel_mask)
+        mel_prediction, _ = self.decoder(acoustic_adaptor_output, style_vector, grid_mel_mask)
 
-        return mel_prediction, src_embedded, style_vector, d_prediction, p_prediction, e_prediction, src_mask, mel_mask, mel_len
+        return mel_prediction, src_embedded, style_vector, d_prediction, p_prediction, e_prediction, src_mask, grid_mel_mask, mel_len
 
     def inference(self, style_vector, src_seq, src_len=None, max_src_len=None, return_attn=False):
         src_mask = get_mask_from_lengths(src_len, max_src_len)
@@ -59,10 +63,13 @@ class StyleSpeech(nn.Module):
 
         # Variance Adaptor
         acoustic_adaptor_output, d_prediction, p_prediction, e_prediction, \
-                mel_len, mel_mask = self.variance_adaptor(encoder_output, src_mask)
-
+                mel_len, mel_mask = self.variance_adaptor(encoder_output, src_mask, self.maxgrid)
+        final_mel_mask = get_mask_from_lengths(mel_len)
         # Deocoding
         mel_output, dec_slf_attn = self.decoder(acoustic_adaptor_output, style_vector, mel_mask)
+        # print(mel_output.shape)
+        mel_output = mel_output[:,:mel_len,:]
+        # print(mel_output.shape)
 
         if return_attn:
             return enc_slf_attn, dec_slf_attn
@@ -138,10 +145,10 @@ class Encoder(nn.Module):
         return enc_output, src_embedded, slf_attn
 
 
-class Decoder(nn.Module):
+class GridDecoder(nn.Module):
     """ Decoder """
     def __init__(self, config):
-        super(Decoder, self).__init__()
+        super(GridDecoder, self).__init__()
         self.max_seq_len = config.max_seq_len
         self.n_layers = config.decoder_layer
         self.d_model = config.decoder_hidden
@@ -149,10 +156,11 @@ class Decoder(nn.Module):
         self.d_k = config.decoder_hidden // config.decoder_head
         self.d_v = config.decoder_hidden // config.decoder_head
         self.d_inner = config.fft_conv1d_filter_size
-        self.fft_conv1d_kernel_size = config.fft_conv1d_kernel_size
+        self.fft_conv1d_kernel_size = config.dec_fft_conv1d_kernel_size
         self.d_out = config.n_mel_channels
         self.style_dim = config.style_vector_dim
         self.dropout = config.dropout
+        self.grids = config.grid_lengths
 
         self.prenet = nn.Sequential(
             nn.Linear(self.d_model, self.d_model//2),
@@ -174,7 +182,17 @@ class Decoder(nn.Module):
     def forward(self, enc_seq, style_code, mask):
         batch_size, max_len = enc_seq.shape[0], enc_seq.shape[1]
         # -- Prepare masks
-        slf_attn_mask = mask.unsqueeze(1).expand(-1, max_len, -1)
+        #* (n_head*batch, max_len, max_len)
+        slf_attn_masks = []
+        for grid_len in self.grids:
+            if grid_len:
+                slf_attn_mask = mask.view(-1, grid_len).unsqueeze(1).expand(-1, grid_len, -1)
+                slf_attn_masks.append(slf_attn_mask)
+            else: 
+                slf_attn_mask = mask.unsqueeze(1).expand(-1, max_len, -1)
+                slf_attn_masks.append(slf_attn_mask)
+
+        # slf_attn_mask = mask.unsqueeze(1).expand(-1, max_len, -1)
 
         # -- Forward
         # prenet
@@ -187,11 +205,11 @@ class Decoder(nn.Module):
         dec_output = dec_embedded + position_embedded
         # fft blocks
         slf_attn = []
-        for dec_layer in self.layer_stack:
+        for i, dec_layer in enumerate(self.layer_stack):
             dec_output, dec_slf_attn = dec_layer(
-                dec_output, style_code,
+                dec_output, style_code, self.grids[i],
                 mask=mask,
-                slf_attn_mask=slf_attn_mask)
+                slf_attn_mask=slf_attn_masks[i])
             slf_attn.append(dec_slf_attn)
         # last fc
         dec_output = self.fc_out(dec_output)
@@ -211,10 +229,16 @@ class FFTBlock(nn.Module):
             d_model, d_inner, fft_conv1d_kernel_size, dropout=dropout)
         self.saln_1 = StyleAdaptiveLayerNorm(d_model, style_dim)
 
-    def forward(self, input, style_vector, mask=None, slf_attn_mask=None):
+    def forward(self, input, style_vector, grid_len=0, mask=None, slf_attn_mask=None):
         # multi-head self attn
+        num_grids = None
+        if grid_len:
+            B, T, D = input.size()
+            num_grids = T//grid_len
+            input = input.view(B*num_grids, grid_len, D)
+
         slf_attn_output, slf_attn = self.slf_attn(input, mask=slf_attn_mask)
-        slf_attn_output = self.saln_0(slf_attn_output, style_vector)
+        slf_attn_output = self.saln_0(slf_attn_output, style_vector, num_grids)
         if mask is not None:
             slf_attn_output = slf_attn_output.masked_fill(mask.unsqueeze(-1), 0)
 

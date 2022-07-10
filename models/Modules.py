@@ -41,7 +41,7 @@ class AffineLinear(nn.Module):
     def forward(self, input):
         return self.affine(input)
 
-
+'''
 class StyleAdaptiveLayerNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super(StyleAdaptiveLayerNorm, self).__init__()
@@ -58,6 +58,37 @@ class StyleAdaptiveLayerNorm(nn.Module):
         gamma, beta = style.chunk(2, dim=-1)
         
         out = self.norm(input)
+        out = gamma * out + beta
+        return out
+'''
+
+class StyleAdaptiveLayerNorm(nn.Module):
+    def __init__(self, in_channel, style_dim):
+        super(StyleAdaptiveLayerNorm, self).__init__()
+        self.in_channel = in_channel
+        self.norm = nn.LayerNorm(in_channel, elementwise_affine=False)
+
+        self.style = AffineLinear(style_dim, in_channel * 2)
+        self.style.affine.bias.data[:in_channel] = 1
+        self.style.affine.bias.data[in_channel:] = 0
+
+    def forward(self, input, style_code, num_grids=None):
+        '''
+        input: (B*n_grid, T/n_grid, D) (if grid)
+                (B, T, D) (else)
+        '''
+        # style
+        style = self.style(style_code).unsqueeze(1)
+        gamma, beta = style.chunk(2, dim=-1)
+        
+        out = self.norm(input)
+        if num_grids is not None:
+            batch, T, D = input.size(0)//num_grids, input.size(1)*num_grids, input.size(2)
+            #* (B, n_grid, T/n_grid, D)
+            out = out.view(batch, num_grids, -1, D)
+            #* (B, T, D)
+            out = out.view(batch, T, D)
+        
         out = gamma * out + beta
         return out
 
@@ -187,6 +218,8 @@ class ScaledDotProductAttention(nn.Module):
             attn = attn.masked_fill(mask, -np.inf)
 
         attn = self.softmax(attn)
+        attn = torch.nan_to_num(attn)
+
         p_attn = self.dropout(attn)
 
         output = torch.bmm(p_attn, v)

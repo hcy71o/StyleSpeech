@@ -18,13 +18,13 @@ def evaluate(args, model, step):
     for i, batch in enumerate(data_loader):
         # Get Data
         id_ = batch["id"]
-        sid, text, mel_target, D, log_D, f0, energy, \
+        sid, text, mel_target, mel_target_style, D, log_D, f0, energy, \
             src_len, mel_len, max_src_len, max_mel_len = model.parse_batch(batch)
     
         with torch.no_grad():
             # Forward
             mel_output, _, _, log_duration_output, f0_output, energy_output, src_mask, mel_mask, out_mel_len = model(
-                            text, src_len, mel_target, mel_len, D, f0, energy, max_src_len, max_mel_len)
+                            text, src_len, mel_target, mel_target_style, mel_len, D, f0, energy, max_src_len, max_mel_len)
             # Cal Loss
             mel_loss, d_loss, f_loss, e_loss = Loss(mel_output,  mel_target, 
                     log_duration_output, log_D, f0_output, f0, energy_output, energy, src_len, mel_len)

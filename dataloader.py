@@ -6,7 +6,7 @@ from text import text_to_sequence
 from utils import pad_1D, pad_2D, process_meta
 
 
-def prepare_dataloader(data_path, filename, batch_size, shuffle=True, num_workers=2, meta_learning=False, seed=0):
+def prepare_dataloader(data_path, filename, batch_size, shuffle=True, num_workers=3, meta_learning=False, seed=0):
     dataset = TextMelDataset(data_path, filename)
     if meta_learning:
         sampler = MetaBatchSampler(dataset.sid_to_indexes, batch_size, seed=seed)
@@ -122,7 +122,9 @@ class TextMelDataset(Dataset):
         
         texts = pad_1D(texts)
         Ds = pad_1D(Ds)
-        mel_targets = pad_2D(mel_targets)
+        #TODO Load from config file
+        mel_targets_for_style = pad_2D(mel_targets)
+        mel_targets = pad_2D(mel_targets,maxgrid=64)
         f0s = pad_1D(f0s)
         energies = pad_1D(energies)
         log_Ds = np.log(Ds + 1.)
@@ -131,6 +133,7 @@ class TextMelDataset(Dataset):
                "sid": np.array(sids),
                "text": texts,
                "mel_target": mel_targets,
+               "mel_target_style": mel_targets_for_style,
                "D": Ds,
                "log_D": log_Ds,
                "f0": f0s,

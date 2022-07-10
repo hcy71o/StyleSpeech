@@ -78,13 +78,13 @@ def main(args, c):
                 break
                 
             # Get Data
-            sid, text, mel_target, D, log_D, f0, energy, \
+            sid, text, mel_target, mel_target_style, D, log_D, f0, energy, \
                     src_len, mel_len, max_src_len, max_mel_len = model.parse_batch(batch)
                 
             # Forward
             scheduled_optim.zero_grad()
             mel_output, src_output, style_vector, log_duration_output, f0_output, energy_output, src_mask, mel_mask, _  = model(
-                    text, src_len, mel_target, mel_len, D, f0, energy, max_src_len, max_mel_len)
+                    text, src_len, mel_target, mel_target_style, mel_len, D, f0, energy, max_src_len, max_mel_len)
 
             mel_loss, d_loss, f_loss, e_loss = Loss(mel_output, mel_target, 
                     log_duration_output, log_D, f0_output, f0, energy_output, energy, src_len, mel_len)
@@ -99,7 +99,7 @@ def main(args, c):
             scheduled_optim.step_and_update_lr()
 
             # Print log
-            if current_step % args.log_step == 0 and current_step != 0:    
+            if current_step % args.std_step == 0 and current_step != 0:    
                 t_l = total_loss.item()
                 m_l = mel_loss.item()
                 d_l = d_loss.item()
@@ -111,14 +111,15 @@ def main(args, c):
                         "Duration Loss: {:.4f}, F0 Loss: {:.4f}, Energy Loss: {:.4f} ;" \
                         .format(t_l, m_l, d_l, f_l, e_l)
                 print(str1 + "\n" + str2 +"\n")
-                with open(os.path.join(log_path, "log.txt"), "a") as f_log:
-                    f_log.write(str1 + "\n" + str2 +"\n")
+                if current_step % args.log_step == 0:
+                    with open(os.path.join(log_path, "log.txt"), "a") as f_log:
+                        f_log.write(str1 + "\n" + str2 +"\n")
 
-                logger.add_scalar('Train/total_loss', t_l, current_step)
-                logger.add_scalar('Train/mel_loss', m_l, current_step)
-                logger.add_scalar('Train/duration_loss', d_l, current_step)
-                logger.add_scalar('Train/f0_loss', f_l, current_step)
-                logger.add_scalar('Train/energy_loss', e_l, current_step)
+                    logger.add_scalar('Train/total_loss', t_l, current_step)
+                    logger.add_scalar('Train/mel_loss', m_l, current_step)
+                    logger.add_scalar('Train/duration_loss', d_l, current_step)
+                    logger.add_scalar('Train/f0_loss', f_l, current_step)
+                    logger.add_scalar('Train/energy_loss', e_l, current_step)
             
             # Save Checkpoint
             if current_step % args.save_step == 0 and current_step != 0:
@@ -166,10 +167,11 @@ if __name__ == "__main__":
     parser.add_argument('--save_path', default='exp_stylespeech')
     parser.add_argument('--config', default='configs/config.json')
     parser.add_argument('--max_iter', default=2000000, type=int)
-    parser.add_argument('--save_step', default=50000, type=int)
+    parser.add_argument('--save_step', default=10000, type=int)
     parser.add_argument('--synth_step', default=5000, type=int)
-    parser.add_argument('--eval_step', default=20000, type=int)
-    parser.add_argument('--log_step', default=5000, type=int)
+    parser.add_argument('--eval_step', default=5000, type=int)
+    parser.add_argument('--log_step', default=500, type=int)
+    parser.add_argument('--std_step', default=100, type=int)
     parser.add_argument('--checkpoint_path', default=None, type=str, help='Path to the pretrained model') 
 
     args = parser.parse_args()

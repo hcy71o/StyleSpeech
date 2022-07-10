@@ -31,7 +31,7 @@ class VarianceAdaptor(nn.Module):
         # Length regulator
         self.length_regulator = LengthRegulator(self.hidden_dim, config.max_seq_len)
     
-    def forward(self, x, src_mask, mel_len=None, mel_mask=None, 
+    def forward(self, x, src_mask, maxgrid, mel_len=None, mel_mask=None, 
                         duration_target=None, pitch_target=None, energy_target=None, max_len=None):
         # Duration
         log_duration_prediction = self.duration_predictor(x, src_mask)
@@ -53,13 +53,13 @@ class VarianceAdaptor(nn.Module):
 
         # Length regulate
         if duration_target is not None:
-            output, pe, mel_len = self.length_regulator(x, duration_target, max_len)
-            mel_mask = utils.get_mask_from_lengths(mel_len)
+            output, pe, mel_len = self.length_regulator(x, duration_target, max_len, maxgrid=maxgrid)
+            mel_mask = utils.get_mask_from_lengths(mel_len,maxgrid=maxgrid)
         else:
             duration_rounded = torch.clamp(torch.round(torch.exp(log_duration_prediction)-1.0), min=0)            
             duration_rounded = duration_rounded.masked_fill(src_mask, 0).long()
-            output, pe, mel_len = self.length_regulator(x, duration_rounded)
-            mel_mask = utils.get_mask_from_lengths(mel_len)
+            output, pe, mel_len = self.length_regulator(x, duration_rounded, maxgrid=maxgrid)
+            mel_mask = utils.get_mask_from_lengths(mel_len,maxgrid=maxgrid)
 
         # Phoneme-wise positional encoding
         output = output + pe
@@ -73,7 +73,7 @@ class LengthRegulator(nn.Module):
         self.position_enc = nn.Parameter(
             get_sinusoid_encoding_table(max_pos+1, hidden_size), requires_grad=False)
 
-    def LR(self, x, duration, max_len):
+    def LR(self, x, duration, max_len, maxgrid):
         output = list()
         position = list()
         mel_len = list()
@@ -84,11 +84,11 @@ class LengthRegulator(nn.Module):
             mel_len.append(expanded.shape[0])
 
         if max_len is not None:
-            output = utils.pad(output, max_len)
-            position = utils.pad(position, max_len)
+            output = utils.pad(output, max_len, maxgrid)
+            position = utils.pad(position, max_len, maxgrid)
         else:
-            output = utils.pad(output)
-            position = utils.pad(position)
+            output = utils.pad(output, maxgrid=maxgrid)
+            position = utils.pad(position, maxgrid=maxgrid)
         return output, position, torch.LongTensor(mel_len).cuda()
 
     def expand(self, batch, predicted):
@@ -102,8 +102,9 @@ class LengthRegulator(nn.Module):
         pos = torch.cat(pos, 0)
         return out, pos
 
-    def forward(self, x, duration, max_len=None):
-        output, position, mel_len = self.LR(x, duration, max_len)
+    def forward(self, x, duration, max_len=None, maxgrid=None):
+        output, position, mel_len = self.LR(x, duration, max_len, maxgrid)
+
         return output, position, mel_len
         
 

@@ -44,17 +44,21 @@ def plot_data(data, titles=None, filename=None):
     plt.close()
 
 
-def get_mask_from_lengths(lengths, max_len=None):
+def get_mask_from_lengths(lengths, max_len=None, maxgrid=None):
     batch_size = lengths.shape[0]
     if max_len is None:
         max_len = torch.max(lengths).item()
+    if maxgrid is not None:
+        grid_last = max_len%maxgrid
+        if grid_last: #* not 0.
+            max_len = max_len + (maxgrid-grid_last)        
 
     ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).cuda()
     mask = (ids >= lengths.unsqueeze(1).expand(-1, max_len))
     return mask
 
 
-def pad_1D(inputs, PAD=0):
+def pad_1D(inputs, PAD=0, maxgrid=None):
 
     def pad_data(x, length, PAD):
         x_padded = np.pad(x, (0, length - x.shape[0]),
@@ -63,11 +67,16 @@ def pad_1D(inputs, PAD=0):
         return x_padded
 
     max_len = max((len(x) for x in inputs))
+    #*
+    if maxgrid is not None:
+        grid_last = max_len%maxgrid
+        if grid_last: #* not 0.
+            max_len = max_len + (maxgrid-grid_last)
     padded = np.stack([pad_data(x, max_len, PAD) for x in inputs])
     return padded
 
 
-def pad_2D(inputs, maxlen=None):
+def pad_2D(inputs, maxlen=None, maxgrid=None):
 
     def pad(x, max_len):
         PAD = 0
@@ -75,6 +84,7 @@ def pad_2D(inputs, maxlen=None):
             raise ValueError("not max_len")
 
         s = np.shape(x)[1]
+
         x_padded = np.pad(x, (0, max_len - np.shape(x)[0]),
                           mode='constant',
                           constant_values=PAD)
@@ -84,16 +94,25 @@ def pad_2D(inputs, maxlen=None):
         output = np.stack([pad(x, maxlen) for x in inputs])
     else:
         max_len = max(np.shape(x)[0] for x in inputs)
+        #*
+        if maxgrid is not None:
+            grid_last = max_len%maxgrid
+            if grid_last: #* not 0.
+                max_len = max_len + (maxgrid-grid_last)
         output = np.stack([pad(x, max_len) for x in inputs])
     return output
 
 
-def pad(input_ele, mel_max_length=None):
+def pad(input_ele, mel_max_length=None, maxgrid=None):
     if mel_max_length:
         max_len = mel_max_length
     else:
         max_len = max([input_ele[i].size(0)for i in range(len(input_ele))])
-
+    if maxgrid is not None:
+        grid_last = max_len%maxgrid
+        if grid_last: #* not 0.
+            max_len = max_len + (maxgrid-grid_last)
+            
     out_list = list()
     for i, batch in enumerate(input_ele):
         if len(batch.shape) == 1:

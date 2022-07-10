@@ -14,6 +14,7 @@
     "n_mel_channels": 80,
     "max_seq_len": 1000,
 
+    "grid_lengths": [0, 64, 32, 16],
     "encoder_layer": 4,
     "encoder_head": 2,
     "encoder_hidden": 256,
@@ -22,6 +23,7 @@
     "decoder_hidden": 256,
     "fft_conv1d_filter_size": 1024,
     "fft_conv1d_kernel_size": [9, 1],
+    "dec_fft_conv1d_kernel_size": [1, 1],
     "dropout": 0.1,
 
     "variance_predictor_filter_size": 256,
