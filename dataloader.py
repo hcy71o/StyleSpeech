@@ -21,6 +21,13 @@ def prepare_dataloader(data_path, filename, batch_size, shuffle=True, num_worker
                         collate_fn=dataset.collate_fn, drop_last=True, num_workers=num_workers) 
     return loader
 
+def prepare_dataloader_vctk(data_path, filename, batch_size, shuffle=True, num_workers=3, meta_learning=False, seed=0):
+    dataset = VCTKDataset(data_path, filename)
+    sampler = None
+    shuffle = shuffle if sampler is None else None
+    loader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, shuffle=shuffle, 
+                    collate_fn=dataset.collate_fn, drop_last=True, num_workers=num_workers) 
+    return loader
 
 def replace_outlier(values, max_v, min_v):
     values = np.where(values<max_v, values, max_v)
@@ -150,30 +157,120 @@ class TextMelDataset(Dataset):
 
         return output
 
+class VCTKDataset(Dataset):
+    def __init__(self, data_path, filename="test.txt",):
+        self.data_path = data_path
+        self.basename, self.text, self.sid = process_meta(os.path.join(data_path, filename))
 
-class MetaBatchSampler():
-    def __init__(self, sid_to_idx, batch_size, max_iter=100000, seed=0):
-        # iterdict contains {sid: [idx1, idx2, ...]}
-        np.random.seed(seed)
+        self.sid_dict = self.create_speaker_table(self.sid)
 
-        self.sids = list(sid_to_idx.keys())
-        np.random.shuffle(self.sids)
-
-        self.sid_to_idx = sid_to_idx
-        self.batch_size = batch_size
-        self.max_iter = max_iter       
+        with open(os.path.join(data_path, 'stats.json')) as f:
+            data = f.read()
+        stats_config = json.loads(data)
+        self.f0_stat = stats_config["f0_stat"] # max, min, mean, std
+        self.energy_stat = stats_config["energy_stat"] # max, min, mean, std
+        #TODO Need to change manually
+        self.f0_stat = [348.40, 0.0, 166.15, 56.77]
+        self.energy_stat = [69.462166, 0.0, 21.941545, 15.8065815]
         
-    def __iter__(self):
-        for _ in range(self.max_iter):
-            selected_sids = np.random.choice(self.sids, self.batch_size, replace=False)
-            batch = []
-            for sid in selected_sids:
-                idx = np.random.choice(self.sid_to_idx[sid], 1)[0]
-                batch.append(idx)
+        self.create_sid_to_index()
+        print('Speaker Num :{}'.format(len(self.sid_dict)))
+    
+    def create_speaker_table(self, sids):
+        speaker_ids = np.sort(np.unique(sids))
+        d = {speaker_ids[i]: i for i in range(len(speaker_ids))}
+        return d
 
-            assert len(batch) == self.batch_size
-            yield batch
+    def create_sid_to_index(self):
+        _sid_to_indexes = {} 
+        # for keeping instance indexes with the same speaker ids
+        for i, sid in enumerate(self.sid):
+            if sid in _sid_to_indexes:
+                _sid_to_indexes[sid].append(i)
+            else:
+                _sid_to_indexes[sid] = [i]
+        self.sid_to_indexes = _sid_to_indexes
 
     def __len__(self):
-        return self.max_iter
+        return len(self.text)
+
+    def __getitem__(self, idx):
+        basename = self.basename[idx]
+        sid = self.sid_dict[self.sid[idx]]
+        phone = np.array(text_to_sequence(self.text[idx], []))
+        mel_path = os.path.join(
+            self.data_path, "mel", "vctk-mel-{}.npy".format(basename))
+        mel_target = np.load(mel_path)
+        D_path = os.path.join(
+            self.data_path, "alignment", "vctk-ali-{}.npy".format(basename))
+        D = np.load(D_path)
+        f0_path = os.path.join(
+            self.data_path, "f0", "vctk-f0-{}.npy".format(basename))
+        f0 = np.load(f0_path)
+        f0 = replace_outlier(f0,  self.f0_stat[0], self.f0_stat[1])
+        f0 = norm_mean_std(f0, self.f0_stat[2], self.f0_stat[3])
+        energy_path = os.path.join(
+            self.data_path, "energy", "vctk-energy-{}.npy".format(basename))
+        energy = np.load(energy_path)
+        energy = replace_outlier(energy, self.energy_stat[0], self.energy_stat[1])
+        energy = norm_mean_std(energy, self.energy_stat[2], self.energy_stat[3])
+        
+        sample = {"id": basename,
+                "sid": sid,
+                "text": phone,
+                "mel_target": mel_target,
+                "D": D,
+                "f0": f0,
+                "energy": energy}
+                
+        return sample
+
+    def reprocess(self, batch, cut_list):
+        ids = [batch[ind]["id"] for ind in cut_list]
+        sids = [batch[ind]["sid"] for ind in cut_list]
+        texts = [batch[ind]["text"] for ind in cut_list]
+        mel_targets = [batch[ind]["mel_target"] for ind in cut_list]
+        Ds = [batch[ind]["D"] for ind in cut_list]
+        f0s = [batch[ind]["f0"] for ind in cut_list]
+        energies = [batch[ind]["energy"] for ind in cut_list]
+        for text, D, id_ in zip(texts, Ds, ids):
+            if len(text) != len(D):
+                print(text, text.shape, D, D.shape, id_)
+        length_text = np.array(list())
+        for text in texts:
+            length_text = np.append(length_text, text.shape[0])
+
+        length_mel = np.array(list())
+        for mel in mel_targets:
+            length_mel = np.append(length_mel, mel.shape[0])
+        
+        texts = pad_1D(texts)
+        Ds = pad_1D(Ds)
+        #TODO Load from config file
+        mel_targets_for_style = pad_2D(mel_targets)
+        mel_targets = pad_2D(mel_targets,maxgrid=64)
+        f0s = pad_1D(f0s)
+        energies = pad_1D(energies)
+        log_Ds = np.log(Ds + 1.)
+
+        out = {"id": ids,
+               "sid": np.array(sids),
+               "text": texts,
+               "mel_target": mel_targets,
+               "mel_target_style": mel_targets_for_style,
+               "D": Ds,
+               "log_D": log_Ds,
+               "f0": f0s,
+               "energy": energies,
+               "src_len": length_text,
+               "mel_len": length_mel}
+        
+        return out
+        
+    def collate_fn(self, batch):
+        len_arr = np.array([d["text"].shape[0] for d in batch])
+        index_arr = np.argsort(-len_arr)
+        output = self.reprocess(batch, index_arr)
+
+        return output
 

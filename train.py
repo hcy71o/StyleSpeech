@@ -8,6 +8,7 @@ from models.StyleSpeech import StyleSpeech
 from dataloader import prepare_dataloader
 from optimizer import ScheduledOptim
 from evaluate import evaluate
+from test import test
 import utils
 
 def load_checkpoint(checkpoint_path, model, optimizer):
@@ -154,6 +155,21 @@ def main(args, c):
                     logger.add_scalar('Validation/energy_loss', e_l, current_step)
                 model.train()
 
+            if current_step % args.test_step == 0 and current_step != 0:
+                model.eval()
+                with torch.no_grad():
+                    m_l, d_l = test(args, model, current_step)
+                    str_v = "*** test for VCTK ***\n" \
+                            "StyleSpeech Step {},\n" \
+                            "Mel Loss: {}\nDuration Loss:{}" \
+                            .format(current_step, m_l, d_l)
+                    print(str_v + "\n" )
+                    with open(os.path.join(log_path, "test.txt"), "a") as f_log:
+                        f_log.write(str_v + "\n")
+                    logger.add_scalar('Test/mel_loss', m_l, current_step)
+                    logger.add_scalar('Test/duration_loss', d_l, current_step)
+                model.train()
+
             current_step += 1 
 
     print("Training Done at Step : {}".format(current_step))
@@ -164,12 +180,14 @@ def main(args, c):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', default='/home/hcy71/DATA/preprocessed_data/LibriTTS')
-    parser.add_argument('--save_path', default='exp_stylespeech')
+    parser.add_argument('--test_path', default='/home/hcy71/DATA/TEST_VCTK')
+    parser.add_argument('--save_path', default='exp_16_to_whole')
     parser.add_argument('--config', default='configs/config.json')
     parser.add_argument('--max_iter', default=2000000, type=int)
-    parser.add_argument('--save_step', default=10000, type=int)
-    parser.add_argument('--synth_step', default=5000, type=int)
-    parser.add_argument('--eval_step', default=5000, type=int)
+    parser.add_argument('--save_step', default=50000, type=int)
+    parser.add_argument('--synth_step', default=10000, type=int)
+    parser.add_argument('--eval_step', default=10000, type=int)
+    parser.add_argument('--test_step', default=10000, type=int)
     parser.add_argument('--log_step', default=500, type=int)
     parser.add_argument('--std_step', default=100, type=int)
     parser.add_argument('--checkpoint_path', default=None, type=str, help='Path to the pretrained model') 
