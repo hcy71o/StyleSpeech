@@ -53,7 +53,7 @@ def inference(a):
             # audio = audio.cpu().numpy().astype('int16')
             audio = audio.cpu().float().numpy()
 
-            output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0] + '_generated_e2e.wav')
+            output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0] + '.wav')
             write(output_file, h.sampling_rate, audio)
             print(output_file)
 

@@ -14,7 +14,7 @@
     "n_mel_channels": 80,
     "max_seq_len": 1000,
 
-    "grid_lengths": [16, 32, 64, 0],
+    "grid_lengths": [0, 64, 24, 16],
     "encoder_layer": 4,
     "encoder_head": 2,
     "encoder_hidden": 256,

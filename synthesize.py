@@ -122,7 +122,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint_path", type=str, required=True, 
         help="Path to the pretrained model")
-    parser.add_argument('--config', default='configs/config.json')
+    parser.add_argument('--config', default='exp_16_to_whole/config.json')
+    # parser.add_argument('--config', default='configs/config.json')
     parser.add_argument("--save_path", type=str, default='results/')
     parser.add_argument("--ref_audio", type=str, required=True,
         help="path to an reference speech audio sample")

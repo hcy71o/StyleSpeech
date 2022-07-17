@@ -19,7 +19,10 @@ class StyleSpeech(nn.Module):
         self.encoder = Encoder(config)
         self.variance_adaptor = VarianceAdaptor(config)
         self.decoder = GridDecoder(config)
-        self.maxgrid = np.max(config.grid_lengths).astype(np.int32)
+        # self.maxgrid = np.max(config.grid_lengths).astype(np.int32)
+        grid_array = np.setdiff1d(config.grid_lengths, 0)
+        self.maxgrid = np.lcm.reduce(grid_array).astype(np.int32)
+        print('lcm of # grids:', self.maxgrid)
         
     def parse_batch(self, batch):
         sid = torch.from_numpy(batch["sid"]).long().cuda()
